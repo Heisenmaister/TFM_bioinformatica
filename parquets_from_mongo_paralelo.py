@@ -9,18 +9,24 @@ from datetime import datetime
 
 # === Config inicial ===
 # Diccionario con filtros específicos para cada colección de MongoDB.
-# Se usan para filtrar los documentos que se extraen de cada colección.
+# Se usan para filtrar los documentos que se extraen de cada colección. Estos filtros funcionan a modo de testeo del código, la API permite insertar cualquier filtro.
 FILTROS = {
-    "samples": {"patol_prin": "Hipertrofica"},
-    "effects": {"IMPACT": {"$in": ["MODERATE", "HIGH"]}, "MAX_AF": {"$lte": 0.05}},
-    "samples_variants": {"cov": {"$gte": 10}, "qual": {"$gte": 20}},
+    "samples": {
+        "afec_patol_prin": "Afectado",
+        "patol_prin": "Brugada"
+    },
+    "effects": {
+        "miRNA": "miRNA_stem",
+        "AF": {
+            "$lte": 0.05
+        }
+    },
+    "samples_variants": {},
     "variants": {}
 }
 
 # === Mongo config ===
 def get_client():
-    # Crea y devuelve un cliente MongoDB para conectarse a la base local
-    # Timeout de servidor configurado a 5000 ms para evitar esperas largas
     return MongoClient("mongodb://localhost:27017", serverSelectionTimeoutMS=5000)
 
 # === Consulta y creación de Polars DataFrame en memoria ===
@@ -36,23 +42,38 @@ def consulta_polars(nombre_col, filtro, queue):
     - queue: objeto Queue para enviar resultados entre hilos
     """
     logging.info(f"▶️ Iniciando consulta: {nombre_col}")
-    client = get_client()           # Crear cliente Mongo
-    db = client.MIRNAS              # Seleccionar base de datos MIRNAS
+    client = get_client()
+    db = client.MIRNAS
 
-    t0 = time.time()                # Tiempo inicio consulta
-    cursor = db[nombre_col].find(filtro, {"_id": 0})  # Ejecutar consulta sin incluir campo _id
-    docs = list(cursor)             # Cargar resultados en lista
-    t1 = time.time()                # Tiempo fin consulta
+    t0 = time.time()
+
+    # Proyección condicional solo para 'effects' (evitando cargar las numerosas variables de la colección)
+    if nombre_col == "effects":
+        projection = {
+            "_id": 0,
+            "id": 1,
+            "Consequence": 1,
+            "SYMBOL": 1,  # Ejemplo de campos específicos
+            "Existing_variation": 1,
+            "AF":1,
+            "CLIN_SIG":1
+        }
+    else:
+        projection = {"_id": 0}
+
+    cursor = db[nombre_col].find(filtro, projection)
+    docs = list(cursor)
+    t1 = time.time()
 
     # Limpieza de datos: reemplazar cadenas vacías por None para mejor manejo en Polars
     for doc in docs:
         for k, v in doc.items():
             if v == "":
                 doc[k] = None
-
+    
     # Crear DataFrame Polars con los datos limpios
     df = pl.DataFrame(docs)
-    t2 = time.time()                # Tiempo fin creación DataFrame
+    t2 = time.time()
 
     # Calcular tiempos parciales y totales
     tiempo_mongo = round(t1 - t0, 3)
@@ -84,12 +105,12 @@ def generar_parquets(dfs, carpeta_salida):
     """
     tiempos_parquets = {}
 
-    # Extraer DataFrames individuales para comodidad
+    # Extraer DataFrames individuales por comodidad
     df_samples = dfs["samples"]
     df_effects = dfs["effects"]
     df_sv = dfs["samples_variants"]
+    df_sv = df_sv.drop("creation_date")
     df_variants = dfs["variants"].with_columns([
-        # Asegurar que ciertas columnas tienen el tipo correcto para evitar errores en joins
         pl.col("chr").cast(pl.Utf8),
         pl.col("ref").cast(pl.Utf8),
         pl.col("alt").cast(pl.Utf8),
@@ -97,7 +118,7 @@ def generar_parquets(dfs, carpeta_salida):
         pl.col("pos_end").cast(pl.Int64)
     ])
 
-    # === Creación del DataFrame largo mediante joins encadenados ===
+     # === Creación del DataFrame largo mediante joins encadenados ===
     df1 = df_samples.join(df_sv, left_on="id", right_on="sample", how="inner")
     df2 = df1.join(df_effects, left_on="variant", right_on="id", how="inner")
     df_final = df2.join(df_variants, left_on="variant", right_on="id", how="inner")
@@ -110,11 +131,11 @@ def generar_parquets(dfs, carpeta_salida):
     tiempos_parquets["parquet_largo"] = round(t_end - t_start, 3)
 
     # === Creación del DataFrame corto con formato pivot (genotipos por muestra) ===
-    muestras = df_samples.select(["id", "name"])                # Seleccionar columnas necesarias
-    variantes = df_variants.select(["id", "key"]).rename({"id": "variant_id"})  # Renombrar para join
-    muestras_variantes = muestras.join(variantes, how="cross")   # Producto cartesiano muestras x variantes
+    muestras = df_samples.select(["id", "name"])      # Seleccionar columnas necesarias
+    variantes = df_variants.select(["id", "key"]).rename({"id": "variant_id"})    # Renombrar para join
+    muestras_variantes = muestras.join(variantes, how="cross")    # Producto cartesiano muestras x variantes
 
-    sv = df_sv.select(["sample", "variant", "homo"])             # Datos de variantes por muestra
+    sv = df_sv.select(["sample", "variant", "homo"])    # Datos de variantes por muestra
     # Join para agregar información homo (homocigoto) si existe, sino null
     df_full = muestras_variantes.join(sv, left_on=["id", "variant_id"], right_on=["sample", "variant"], how="left")
 
@@ -137,6 +158,7 @@ def generar_parquets(dfs, carpeta_salida):
     df_corto.write_parquet(ruta_corto)
     t_end = time.time()
     tiempos_parquets["parquet_corto"] = round(t_end - t_start, 3)
+
     return tiempos_parquets
 
 # === Guardar informe con tiempos y registros ===
@@ -166,7 +188,6 @@ def guardar_informe_txt(mediciones, tiempos_parquets, total_time, carpeta_salida
 
         f.write(f"⏱️ Tiempo TOTAL de ejecución: {total_time} segundos\n")
 
-
 # === Función para integrar en API ===
 def ejecutar_consulta_y_generar_parquets(filtros_dict, carpeta_salida):
     """
@@ -182,9 +203,6 @@ def ejecutar_consulta_y_generar_parquets(filtros_dict, carpeta_salida):
     - tiempos_parquets: tiempos de escritura de archivos parquet
     - mediciones: métricas de consulta y creación de DataFrames
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from queue import Queue
-
     queue = Queue()
     dfs = {}
     mediciones = {}
@@ -203,7 +221,6 @@ def ejecutar_consulta_y_generar_parquets(filtros_dict, carpeta_salida):
 
     return dfs, tiempos_parquets, mediciones
 
-
 # === MAIN ===
 def main():
     """
@@ -217,10 +234,12 @@ def main():
     )
 
     # Crear carpeta de salida con nombre basado en fecha y hora actuales
-    carpeta_salida = os.path.join(os.path.dirname(__file__), "output", datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    carpeta_salida = os.path.join(
+        os.path.dirname(__file__), "output", datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    )
     os.makedirs(carpeta_salida, exist_ok=True)
 
-    inicio_total = time.time()  # Tiempo inicio global
+    inicio_total = time.time()
 
     queue = Queue()
     dfs = {}
@@ -229,7 +248,6 @@ def main():
     # Ejecutar consultas a MongoDB en paralelo usando ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(consulta_polars, col, filtro, queue) for col, filtro in FILTROS.items()]
-        # Recoger resultados a medida que terminan
         for _ in futures:
             nombre, df, info = queue.get()
             dfs[nombre] = df
@@ -252,4 +270,3 @@ def main():
 # Ejecutar main si el script se llama directamente
 if __name__ == "__main__":
     main()
-
