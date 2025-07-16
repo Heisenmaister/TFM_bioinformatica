@@ -1,0 +1,32 @@
+== MÉTRICAS DE TIEMPO EN EJECUCIÓN PARALELA ==
+
+🗂️  samples
+    📊 Registros         : 51
+    ⏱️ MongoDB            : 0.006 s
+    🧪 Conversión Polars   : 0.0 s
+    ⏲️ Tiempo total       : 0.006 s
+
+🗂️  variants
+    📊 Registros         : 4878
+    ⏱️ MongoDB            : 0.016 s
+    🧪 Conversión Polars   : 0.006 s
+    ⏲️ Tiempo total       : 0.022 s
+
+🗂️  effects
+    📊 Registros         : 449
+    ⏱️ MongoDB            : 0.062 s
+    🧪 Conversión Polars   : 0.001 s
+    ⏲️ Tiempo total       : 0.063 s
+
+🗂️  samples_variants
+    📊 Registros         : 150515
+    ⏱️ MongoDB            : 0.287 s
+    🧪 Conversión Polars   : 0.166 s
+    ⏲️ Tiempo total       : 0.453 s
+
+== TIEMPOS GENERACIÓN PARQUETS ==
+
+    🟦 Parquet largo : 0.004 s
+    🟩 Parquet corto : 0.008 s
+
+⏱️ Tiempo TOTAL de ejecución: 0.501 segundos
